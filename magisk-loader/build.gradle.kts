@@ -128,6 +128,46 @@ val zipAll = task("zipAll") {
     group = "LSPosed"
 }
 
+val generateWebRoot = tasks.register<Copy>("generateWebRoot") {
+    group = "LSPosed"
+    val webroottmp = File("$projectDir/build/intermediates/generateWebRoot")
+    val webrootsrc = File(webroottmp, "src")
+
+    onlyIf {
+        val os = org.gradle.internal.os.OperatingSystem.current()
+        if (os.isWindows) {
+            exec {
+                commandLine("cmd", "/c", "where", "yarn")
+                isIgnoreExitValue = true
+            }.exitValue == 0
+        } else {
+            exec {
+                commandLine("which", "yarn")
+                isIgnoreExitValue = true
+            }.exitValue == 0
+        }
+    }
+
+    doFirst {
+        webroottmp.mkdirs()
+        webrootsrc.mkdirs()
+    }
+
+    from("$projectDir/src/webroot")
+    into(webrootsrc)
+
+    doLast {
+        exec {
+            workingDir = webroottmp
+            commandLine("yarn", "add", "parcel-bundler", "kernelsu", "--dev")
+        }
+        exec {
+            workingDir = webroottmp
+            commandLine("./node_modules/.bin/parcel", "build", "src/index.html")
+        }
+    }
+}
+
 fun afterEval() = android.applicationVariants.forEach { variant ->
     val variantCapped = variant.name.replaceFirstChar { it.uppercase() }
     val variantLowered = variant.name.lowercase()
@@ -147,7 +187,8 @@ fun afterEval() = android.applicationVariants.forEach { variant ->
             "assemble$variantCapped",
             ":app:package$buildTypeCapped",
             ":daemon:package$buildTypeCapped",
-            ":dex2oat:externalNativeBuild${buildTypeCapped}"
+            ":dex2oat:externalNativeBuild${buildTypeCapped}",
+            generateWebRoot
         )
         into(magiskDir)
         from("${rootProject.projectDir}/README.md")
@@ -218,6 +259,14 @@ fun afterEval() = android.applicationVariants.forEach { variant ->
         into("framework") {
             from(dexOutPath)
             rename("classes.dex", "lspd.dex")
+        }
+        into("webroot") {
+            if (flavorLowered == "zygisk") {
+                from("$projectDir/build/intermediates/generateWebRoot/dist") {
+                    include("**/*.js")
+                    include("**/*.html")
+                }
+            }
         }
 
         val injected = objects.newInstance<Injected>(magiskDir.get().asFile.path)
@@ -310,7 +359,7 @@ val pushDaemonNative = task<Exec>("pushDaemonNative") {
             }
             outputStream.toString().trim()
         }
-        workingDir(project(":daemon").layout.buildDirectory.dir("intermediates/stripped_native_libs/debug/out/lib/$abi"))
+        workingDir(project(":daemon").layout.buildDirectory.dir("intermediates/stripped_native_libs/debug/stripDebugDebugSymbols/out/lib/$abi"))
     }
     commandLine(adb, "push", "libdaemon.so", "/data/local/tmp/libdaemon.so")
 }
@@ -336,6 +385,11 @@ val pushApk = task<Exec>("pushApk") {
     doFirst {
         exec {
             commandLine(adb, "shell", "su", "-c", "rm", "-f", tmpApk)
+        }
+    }
+    doLast {
+        exec {
+            commandLine(adb, "shell", "su", "-c", "mv", tmpApk, "/data/adb/modules/zygisk_lsposed/")
         }
     }
     workingDir(project(":app").layout.buildDirectory.dir("outputs/apk/debug"))
